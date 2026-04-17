@@ -112,7 +112,7 @@ def send_digest(
             "type": "section",
             "fields": [
                 {"type": "mrkdwn", "text": f"*Scanned:* {total_found} companies"},
-                {"type": "mrkdwn", "text": f"*Already in Salesforce:* {skipped_crm}"},
+                {"type": "mrkdwn", "text": f"*Already in pipeline:* {skipped_crm}"},
                 {"type": "mrkdwn", "text": f"*Net new:* {net_new}"},
                 {
                     "type": "mrkdwn",
@@ -143,7 +143,7 @@ def send_digest(
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"_… and {net_new - rank} more. Run `python run.py` locally for full output._",
+                        "text": f"_… and {net_new - rank} more. Trigger a manual run in GitHub Actions for full output._",
                     },
                 })
                 break

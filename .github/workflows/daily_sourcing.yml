@@ -2,14 +2,14 @@ name: Daily Sourcing Pipeline
 
 on:
   schedule:
-    # 7:00 AM UTC, Monday–Friday  (adjust timezone offset as needed)
+    # 7:00 AM UTC Monday–Friday (= 9:00 AM CEST / 8:00 AM CET)
     - cron: "0 7 * * 1-5"
-  workflow_dispatch:   # lets you trigger a manual run from the GitHub UI
+  workflow_dispatch: # lets you trigger a manual run from the GitHub UI
 
 jobs:
   source:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
@@ -25,12 +25,9 @@ jobs:
 
       - name: Run sourcing pipeline
         env:
+          # Required — add these in GitHub → Settings → Secrets and variables → Actions
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          PITCHBOOK_API_KEY: ${{ secrets.PITCHBOOK_API_KEY }}
-          GRATA_API_KEY: ${{ secrets.GRATA_API_KEY }}
-          SALESFORCE_USERNAME: ${{ secrets.SALESFORCE_USERNAME }}
-          SALESFORCE_PASSWORD: ${{ secrets.SALESFORCE_PASSWORD }}
-          SALESFORCE_SECURITY_TOKEN: ${{ secrets.SALESFORCE_SECURITY_TOKEN }}
-          SALESFORCE_DOMAIN: ${{ secrets.SALESFORCE_DOMAIN }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          # Optional — add when ready
+          GRATA_API_KEY: ${{ secrets.GRATA_API_KEY }}
         run: python run.py

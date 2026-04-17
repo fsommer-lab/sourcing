@@ -104,7 +104,7 @@ def enrich_from_pitchbook(company: Company) -> Company:
     Only called for companies found via news where data may be incomplete.
     """
     logger.info("PitchBook enrichment: %s", company.name)
-    output = _call_claude(_ENRICH_PROMPT.format(name=company.name))
+    output = call_claude(_ENRICH_PROMPT.format(name=company.name))
     if not output:
         return company
 

@@ -1,4 +1,5 @@
 requests>=2.31.0
+anthropic>=0.30.0
 atoma>=0.0.2
 beautifulsoup4>=4.12.0
 lxml>=4.9.0
