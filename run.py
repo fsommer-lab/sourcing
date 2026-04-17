@@ -6,21 +6,21 @@ Sources
 -------
 - EU-Startups + TechCrunch   RSS feeds → Claude NLP extracts company data
 - PitchBook                  Via local claude CLI + PitchBook MCP (no Data API needed)
-- Grata                      Company search API
+- Grata                      Company search API (optional)
 
 Pipeline
 --------
-collect → enrich → deduplicate → score → filter → CRM dedup → Slack digest
+collect → enrich → deduplicate → score → filter → portfolio dedup → Slack digest
 """
 import logging
 import sys
 
 from config import THESIS
 from models import Company
+from tools.crm_filter import filter_known_companies
 from tools.grata import GrataClient
 from tools.news import run_news_agent
 from tools.pitchbook import enrich_from_pitchbook, run_pitchbook_news_search
-from tools.salesforce_client import SalesforceClient
 from tools.slack import send_digest
 
 logging.basicConfig(
@@ -106,23 +106,22 @@ def main() -> None:
     logger.info("═══ Daily sourcing pipeline starting ═══")
 
     grata = GrataClient()
-    sf = SalesforceClient()
 
-    # 1. Collect from all sources in parallel (conceptually — sequential here)
+    # 1. Collect from all sources
     logger.info("Phase 1: collecting from all sources")
     news_cos = run_news_agent()
     pb_cos = run_pitchbook_news_search()
     grata_cos = grata.search_companies()
 
-    # 2. Enrich news-found companies with PitchBook data (fills headcount, funding gaps)
+    # 2. Enrich news companies with PitchBook data
     logger.info("Phase 2: enriching %d news companies via PitchBook", len(news_cos))
     news_cos = [enrich_from_pitchbook(c) for c in news_cos]
 
-    # 3. Merge + deduplicate
+    # 3. Merge + deduplicate across sources
     all_companies = _dedup(news_cos + pb_cos + grata_cos)
     logger.info("Total unique companies: %d", len(all_companies))
 
-    # 4. Score
+    # 4. Score against thesis
     scored = [_score(c) for c in all_companies]
 
     # 5. Filter: score threshold + funding cap + no late-stage rounds
@@ -135,12 +134,11 @@ def main() -> None:
     qualified.sort(key=lambda c: c.score or 0, reverse=True)
     logger.info("Qualified (score ≥ %d): %d", THESIS["min_score_threshold"], len(qualified))
 
-    # 6. CRM dedup
-    new_companies = sf.filter_new(qualified)
-    skipped = len(qualified) - len(new_companies)
-    logger.info("Net new (not in Salesforce): %d", len(new_companies))
+    # 6. Remove companies already in your portfolio.xlsx
+    new_companies, skipped = filter_known_companies(qualified)
+    logger.info("Skipped (already in portfolio): %d — Net new: %d", skipped, len(new_companies))
 
-    # 7. Slack digest
+    # 7. Send Slack digest
     send_digest(
         companies=new_companies,
         skipped_crm=skipped,
