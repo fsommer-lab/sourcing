@@ -2,13 +2,15 @@
 """
 Daily sourcing pipeline for European growth equity deal flow.
 
-Sources:
-  - EU-Startups + TechCrunch (RSS + Claude NLP extraction)
-  - PitchBook Data API  (requires separate API license)
-  - Grata Search API
+Sources
+-------
+- EU-Startups + TechCrunch   RSS feeds → Claude NLP extracts company data
+- PitchBook                  Via local claude CLI + PitchBook MCP (no Data API needed)
+- Grata                      Company search API
 
-Pipeline:
-  collect → deduplicate → score → filter → CRM dedup → Slack digest
+Pipeline
+--------
+collect → enrich → deduplicate → score → filter → CRM dedup → Slack digest
 """
 import logging
 import sys
@@ -19,7 +21,7 @@ from config import ANTHROPIC_API_KEY, THESIS
 from models import Company
 from tools.grata import GrataClient
 from tools.news import run_news_agent
-from tools.pitchbook import PitchBookClient
+from tools.pitchbook import enrich_from_pitchbook, run_pitchbook_news_search
 from tools.salesforce_client import SalesforceClient
 from tools.slack import send_digest
 
@@ -35,51 +37,45 @@ logger = logging.getLogger("sourcing")
 
 def _score(company: Company) -> Company:
     """
-    Score a company 0-100 against the investment thesis.
+    Score 0–100 against the investment thesis.
 
-    Breakdown (max 100):
-      Geography match      20 pts
-      Sector match         20 pts
-      Funding fit          25 pts  (bootstrapped) / 20 (≤10M) / 10 (≤20M)
-      Round type           10 pts
-      Headcount fit        25 pts  (25-80 ideal) / 15 (81-300)
+    Geography match      20 pts
+    Sector match         20 pts
+    Funding fit          25 pts  (bootstrapped) / 20 (≤€10M) / 10 (≤€20M)
+    Round type           10 pts
+    Headcount fit        25 pts  (25-80 ideal) / 15 (81-300)
     """
     score = 0
     breakdown: dict[str, int] = {}
 
-    # Geography
     geo_values = set(THESIS["geographies"].values())
     geo_keys = set(THESIS["geographies"].keys())
     if company.country in geo_values or company.country in geo_keys:
         score += 20
         breakdown["geography"] = 20
 
-    # Sector — check both sector field and description
     sector_kws = [s.lower() for s in THESIS["sectors"]]
     combined = f"{company.sector} {company.description}".lower()
     if any(kw in combined for kw in sector_kws):
         score += 20
         breakdown["sector"] = 20
 
-    # Funding
     total = company.total_funding_eur or 0
-    if total == 0:                          # bootstrapped
+    if total == 0:
         pts = 25
     elif total <= 10_000_000:
         pts = 20
     elif total <= THESIS["max_total_funding_eur"]:
         pts = 10
     else:
-        pts = 0                             # over budget — will be filtered out
+        pts = 0
     score += pts
     breakdown["funding"] = pts
 
-    # Round type
     if company.last_round_type in THESIS["deal_types_include"]:
         score += 10
         breakdown["round_type"] = 10
 
-    # Headcount
     hc = company.headcount or 0
     if THESIS["min_headcount"] <= hc <= 80:
         score += 25
@@ -112,41 +108,42 @@ def main() -> None:
     logger.info("═══ Daily sourcing pipeline starting ═══")
 
     anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    pitchbook = PitchBookClient()
     grata = GrataClient()
     sf = SalesforceClient()
 
-    # 1. Collect
+    # 1. Collect from all sources in parallel (conceptually — sequential here)
     logger.info("Phase 1: collecting from all sources")
     news_cos = run_news_agent(anthropic_client)
-    pb_cos = pitchbook.search_recent_deals(days_back=1)
+    pb_cos = run_pitchbook_news_search()
     grata_cos = grata.search_companies()
 
-    all_companies = _dedup(news_cos + pb_cos + grata_cos)
-    logger.info("Collected %d unique companies total", len(all_companies))
+    # 2. Enrich news-found companies with PitchBook data (fills headcount, funding gaps)
+    logger.info("Phase 2: enriching %d news companies via PitchBook", len(news_cos))
+    news_cos = [enrich_from_pitchbook(c) for c in news_cos]
 
-    # 2. Score
+    # 3. Merge + deduplicate
+    all_companies = _dedup(news_cos + pb_cos + grata_cos)
+    logger.info("Total unique companies: %d", len(all_companies))
+
+    # 4. Score
     scored = [_score(c) for c in all_companies]
 
-    # 3. Filter: score threshold + funding cap + no excluded round types
+    # 5. Filter: score threshold + funding cap + no late-stage rounds
     qualified = [
         c for c in scored
         if (c.score or 0) >= THESIS["min_score_threshold"]
-        and (
-            c.total_funding_eur is None
-            or c.total_funding_eur <= THESIS["max_total_funding_eur"]
-        )
+        and (c.total_funding_eur is None or c.total_funding_eur <= THESIS["max_total_funding_eur"])
         and c.last_round_type not in THESIS["deal_types_exclude"]
     ]
     qualified.sort(key=lambda c: c.score or 0, reverse=True)
     logger.info("Qualified (score ≥ %d): %d", THESIS["min_score_threshold"], len(qualified))
 
-    # 4. CRM dedup
+    # 6. CRM dedup
     new_companies = sf.filter_new(qualified)
     skipped = len(qualified) - len(new_companies)
     logger.info("Net new (not in Salesforce): %d", len(new_companies))
 
-    # 5. Slack digest
+    # 7. Slack digest
     send_digest(
         companies=new_companies,
         skipped_crm=skipped,
