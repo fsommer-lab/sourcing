@@ -51,9 +51,6 @@ NEWS_FEEDS = [
     },
 ]
 
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-ANTHROPIC_MODEL = "claude-opus-4-7"
-
 PITCHBOOK_API_KEY = os.getenv("PITCHBOOK_API_KEY", "")
 PITCHBOOK_BASE_URL = "https://api.pitchbook.com/v1"
 

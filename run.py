@@ -15,9 +15,7 @@ collect → enrich → deduplicate → score → filter → CRM dedup → Slack 
 import logging
 import sys
 
-import anthropic
-
-from config import ANTHROPIC_API_KEY, THESIS
+from config import THESIS
 from models import Company
 from tools.grata import GrataClient
 from tools.news import run_news_agent
@@ -107,13 +105,12 @@ def _dedup(companies: list[Company]) -> list[Company]:
 def main() -> None:
     logger.info("═══ Daily sourcing pipeline starting ═══")
 
-    anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     grata = GrataClient()
     sf = SalesforceClient()
 
     # 1. Collect from all sources in parallel (conceptually — sequential here)
     logger.info("Phase 1: collecting from all sources")
-    news_cos = run_news_agent(anthropic_client)
+    news_cos = run_news_agent()
     pb_cos = run_pitchbook_news_search()
     grata_cos = grata.search_companies()
 

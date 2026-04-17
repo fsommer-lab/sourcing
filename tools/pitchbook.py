@@ -1,10 +1,8 @@
-import json
 import logging
-import re
-import subprocess
 from typing import Optional
 
 from models import Company
+from tools.claude_cli import call_claude, parse_json
 
 logger = logging.getLogger(__name__)
 
@@ -58,65 +56,6 @@ Return ONLY a JSON object — no markdown, no explanation:
 """
 
 
-# ── Claude CLI bridge ──────────────────────────────────────────────────────────
-
-def _call_claude(prompt: str, timeout: int = 180) -> Optional[str]:
-    """
-    Invoke the local `claude` CLI in non-interactive mode.
-    The CLI has the PitchBook MCP configured, so Claude can call PitchBook
-    tools directly without a separate Data API license.
-    """
-    try:
-        result = subprocess.run(
-            ["claude", "-p", prompt],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        if result.returncode != 0:
-            logger.warning("claude CLI exited %d: %s", result.returncode, result.stderr[:300])
-            return None
-        return result.stdout.strip()
-
-    except FileNotFoundError:
-        logger.error(
-            "The 'claude' command was not found. "
-            "Make sure Claude Code is installed: https://claude.ai/code"
-        )
-        return None
-    except subprocess.TimeoutExpired:
-        logger.error("claude CLI timed out after %ds", timeout)
-        return None
-
-
-def _parse_json(text: str):
-    """Extract a JSON value from Claude's response (handles code-fenced output)."""
-    if not text:
-        return None
-    # Strip ``` code fences if present
-    if "```" in text:
-        for block in text.split("```")[1::2]:
-            cleaned = re.sub(r"^json\s*", "", block.strip())
-            try:
-                return json.loads(cleaned)
-            except json.JSONDecodeError:
-                pass
-    # Direct parse
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    # Last resort: find first [...] or {...} in the text
-    match = re.search(r"(\[.*?\]|\{.*?\})", text, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group(1))
-        except json.JSONDecodeError:
-            pass
-    logger.warning("Could not parse JSON from claude output:\n%s", text[:400])
-    return None
-
-
 # ── Public API ─────────────────────────────────────────────────────────────────
 
 def run_pitchbook_news_search() -> list[Company]:
@@ -125,11 +64,11 @@ def run_pitchbook_news_search() -> list[Company]:
     European tech companies from PitchBook's news feed.
     """
     logger.info("PitchBook: querying recent European funding news via claude CLI…")
-    output = _call_claude(_NEWS_SEARCH_PROMPT)
+    output = call_claude(_NEWS_SEARCH_PROMPT)
     if not output:
         return []
 
-    data = _parse_json(output)
+    data = parse_json(output)
     if not isinstance(data, list):
         logger.warning("PitchBook news search: unexpected response format")
         return []
@@ -169,7 +108,7 @@ def enrich_from_pitchbook(company: Company) -> Company:
     if not output:
         return company
 
-    data = _parse_json(output)
+    data = parse_json(output)
     if not isinstance(data, dict) or not data.get("found"):
         return company
 
