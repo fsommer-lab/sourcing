@@ -1,16 +1,7 @@
 #!/usr/bin/env python3
 """
-Daily sourcing pipeline for European growth equity deal flow.
-
-Sources
--------
-- EU-Startups + TechCrunch   RSS feeds → Claude NLP extracts company data
-- PitchBook                  Via local claude CLI + PitchBook MCP (no Data API needed)
-- Grata                      Company search API (optional)
-
-Pipeline
---------
-collect → enrich → deduplicate → score → filter → portfolio dedup → Slack digest
+Daily sourcing pipeline — runs on the Claude Code server where
+the claude CLI and PitchBook MCP are available.
 """
 import logging
 import sys
@@ -31,24 +22,12 @@ logging.basicConfig(
 logger = logging.getLogger("sourcing")
 
 
-# ── Scoring ────────────────────────────────────────────────────────────────────
-
 def _score(company: Company) -> Company:
-    """
-    Score 0–100 against the investment thesis.
-
-    Geography match      20 pts
-    Sector match         20 pts
-    Funding fit          25 pts  (bootstrapped) / 20 (≤€10M) / 10 (≤€20M)
-    Round type           10 pts
-    Headcount fit        25 pts  (25-80 ideal) / 15 (81-300)
-    """
     score = 0
     breakdown: dict[str, int] = {}
 
     geo_values = set(THESIS["geographies"].values())
-    geo_keys = set(THESIS["geographies"].keys())
-    if company.country in geo_values or company.country in geo_keys:
+    if company.country in geo_values:
         score += 20
         breakdown["geography"] = 20
 
@@ -59,14 +38,7 @@ def _score(company: Company) -> Company:
         breakdown["sector"] = 20
 
     total = company.total_funding_eur or 0
-    if total == 0:
-        pts = 25
-    elif total <= 10_000_000:
-        pts = 20
-    elif total <= THESIS["max_total_funding_eur"]:
-        pts = 10
-    else:
-        pts = 0
+    pts = 25 if total == 0 else 20 if total <= 10_000_000 else 10 if total <= THESIS["max_total_funding_eur"] else 0
     score += pts
     breakdown["funding"] = pts
 
@@ -87,29 +59,25 @@ def _score(company: Company) -> Company:
     return company
 
 
-# ── Deduplication ─────────────────────────────────────────────────────────────
-
 def _dedup(companies: list[Company]) -> list[Company]:
     seen: set[str] = set()
     unique: list[Company] = []
     for c in companies:
-        key = c.name.lower().strip()
-        if key not in seen:
-            seen.add(key)
+        k = c.name.lower().strip()
+        if k not in seen:
+            seen.add(k)
             unique.append(c)
     return unique
 
-
-# ── Main pipeline ─────────────────────────────────────────────────────────────
 
 def main() -> None:
     logger.info("═══ Daily sourcing pipeline starting ═══")
 
     grata = GrataClient()
 
-    # 1. Collect from all sources
+    # 1. Collect
     logger.info("Phase 1: collecting from all sources")
-    news_cos = run_news_agent()
+    news_cos = run_news_agent(hours_back=24)
     pb_cos = run_pitchbook_news_search()
     grata_cos = grata.search_companies()
 
@@ -117,14 +85,14 @@ def main() -> None:
     logger.info("Phase 2: enriching %d news companies via PitchBook", len(news_cos))
     news_cos = [enrich_from_pitchbook(c) for c in news_cos]
 
-    # 3. Merge + deduplicate across sources
+    # 3. Merge + deduplicate
     all_companies = _dedup(news_cos + pb_cos + grata_cos)
     logger.info("Total unique companies: %d", len(all_companies))
 
-    # 4. Score against thesis
+    # 4. Score
     scored = [_score(c) for c in all_companies]
 
-    # 5. Filter: score threshold + funding cap + no late-stage rounds
+    # 5. Filter
     qualified = [
         c for c in scored
         if (c.score or 0) >= THESIS["min_score_threshold"]
@@ -132,19 +100,14 @@ def main() -> None:
         and c.last_round_type not in THESIS["deal_types_exclude"]
     ]
     qualified.sort(key=lambda c: c.score or 0, reverse=True)
-    logger.info("Qualified (score ≥ %d): %d", THESIS["min_score_threshold"], len(qualified))
+    logger.info("Qualified: %d", len(qualified))
 
-    # 6. Remove companies already in your portfolio.xlsx
+    # 6. Portfolio dedup
     new_companies, skipped = filter_known_companies(qualified)
-    logger.info("Skipped (already in portfolio): %d — Net new: %d", skipped, len(new_companies))
+    logger.info("Net new: %d  |  Skipped: %d", len(new_companies), skipped)
 
-    # 7. Send Slack digest
-    send_digest(
-        companies=new_companies,
-        skipped_crm=skipped,
-        total_found=len(all_companies),
-    )
-
+    # 7. Slack digest
+    send_digest(companies=new_companies, skipped_crm=skipped, total_found=len(all_companies))
     logger.info("═══ Pipeline complete ═══")
 
 

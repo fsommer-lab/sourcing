@@ -2,7 +2,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-import feedparser
+import atoma
 import requests
 from bs4 import BeautifulSoup
 
@@ -39,7 +39,7 @@ Return ONLY a JSON object, no markdown, no explanation:
   "website": "URL or null"
 }}
 
-Currency conversion if needed: 1 USD ≈ 0.92 EUR, 1 GBP ≈ 1.17 EUR.
+Currency conversion: 1 USD = 0.92 EUR, 1 GBP = 1.17 EUR.
 If not relevant return {{"relevant": false}}.\
 """
 
@@ -50,22 +50,23 @@ def _fetch_articles(hours_back: int = 24) -> list[dict]:
 
     for feed_cfg in NEWS_FEEDS:
         try:
-            feed = feedparser.parse(feed_cfg["url"])
-            for entry in feed.entries:
-                pub = None
-                if hasattr(entry, "published_parsed") and entry.published_parsed:
-                    pub = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
-                if pub and pub < cutoff:
+            resp = requests.get(feed_cfg["url"], timeout=10,
+                                headers={"User-Agent": "Mozilla/5.0"})
+            resp.raise_for_status()
+            feed = atoma.parse_rss_bytes(resp.content)
+
+            for entry in feed.items:
+                pub = entry.pub_date
+                if pub and pub.replace(tzinfo=timezone.utc) < cutoff:
                     continue
                 articles.append({
-                    "title": entry.get("title", ""),
-                    "url": entry.get("link", ""),
-                    "summary": entry.get("summary", ""),
-                    "published": pub.isoformat() if pub else None,
+                    "title": entry.title or "",
+                    "url": entry.link or "",
+                    "summary": entry.description or "",
                     "source": feed_cfg["name"],
                 })
         except Exception as e:
-            logger.warning("Failed to fetch feed %s: %s", feed_cfg["name"], e)
+            logger.warning("Feed error %s: %s", feed_cfg["name"], e)
 
     logger.info("Fetched %d articles from RSS feeds", len(articles))
     return articles
@@ -73,22 +74,16 @@ def _fetch_articles(hours_back: int = 24) -> list[dict]:
 
 def _fetch_article_text(url: str) -> str:
     try:
-        resp = requests.get(
-            url, timeout=10,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; SourcingBot/1.0)"},
-        )
+        resp = requests.get(url, timeout=10,
+                            headers={"User-Agent": "Mozilla/5.0"})
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "lxml")
         for tag in soup(["nav", "footer", "aside", "script", "style", "form"]):
             tag.decompose()
-        content = (
-            soup.find("article")
-            or soup.find("main")
-            or soup.find(class_=["article-body", "post-content", "entry-content"])
-            or soup.find("body")
-        )
-        text = content.get_text(separator=" ", strip=True) if content else ""
-        return text[:4000]
+        content = (soup.find("article") or soup.find("main")
+                   or soup.find(class_=["article-body", "post-content", "entry-content"])
+                   or soup.find("body"))
+        return (content.get_text(separator=" ", strip=True) if content else "")[:4000]
     except Exception as e:
         logger.warning("Failed to fetch article %s: %s", url, e)
         return ""
@@ -131,6 +126,7 @@ def run_news_agent(hours_back: int = 24) -> list[Company]:
     for article in articles:
         company = _extract_company(article)
         if company:
-            logger.info("News match: %s (%s) via %s", company.name, company.country, article["source"])
+            logger.info("News match: %s (%s) via %s",
+                        company.name, company.country, article["source"])
             companies.append(company)
     return companies
