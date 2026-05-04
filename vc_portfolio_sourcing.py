@@ -22,41 +22,23 @@ from tools.claude_cli import call_claude, parse_json
 # ── Spectrum Equity investment thesis ─────────────────────────────────────────
 
 SPECTRUM_THESIS = {
-    # Spectrum is a growth equity firm — they want companies already scaling
+    # Target PitchBook round type labels (exact match, case-insensitive)
     "target_stages": [
-        "Series B", "Series C", "Series D", "Series E",
-        "Growth Equity", "Late Stage VC", "Growth",
+        "Seed", "Series A", "Early Stage VC", "Later Stage VC",
     ],
-    "early_stages": [
-        "Pre-Seed", "Seed", "Series A",
+    "excluded_stages": [
+        "Pre-Seed", "Angel", "Series B", "Series C", "Series D", "Series E",
+        "Growth Equity", "Late Stage", "PE Buyout", "IPO",
     ],
-    # Total capital raised range (USD) — too small means pre-scale,
-    # too large means already institutional PE territory
-    "total_funding_min_usd": 15_000_000,
-    "total_funding_max_usd": 600_000_000,
-    # Business models Spectrum targets
+    # Total capital raised range (USD) — 40 pts for stage, 30 for biz model, 30 for funding
+    "total_funding_min_usd": 0,
+    "total_funding_max_usd": 20_000_000,
+    # Business models Spectrum targets (30 pts)
     "business_model_keywords": [
         "saas", "software", "subscription", "platform", "marketplace",
-        "internet", "digital media", "information services", "data",
+        "internet", "digital media", "information services",
+        "data", "analytics", "database",
         "e-commerce", "fintech", "edtech", "healthtech",
-    ],
-    # Sectors they like
-    "target_sectors": [
-        "Software", "SaaS", "B2B Software", "Enterprise Software",
-        "Internet", "Marketplace", "E-Commerce",
-        "Fintech", "Financial Technology", "Insurtech",
-        "EdTech", "Education Technology",
-        "Health Tech", "Health Information",
-        "Marketing Tech", "AdTech",
-        "HR Tech", "Legal Tech", "PropTech",
-        "Data & Analytics", "Developer Tools",
-        "Digital Media", "Information Services",
-    ],
-    # Hard excludes — not software/internet businesses
-    "excluded_sectors": [
-        "Hardware", "Semiconductors", "Biotech", "Pharma",
-        "Cleantech", "Energy", "Real Estate", "Construction",
-        "Food & Beverage", "Retail", "Manufacturing",
     ],
 }
 
@@ -95,54 +77,53 @@ If the investor has no recorded investments, return: []
 # ── Scoring logic ──────────────────────────────────────────────────────────────
 
 def score_company(c: dict) -> tuple[int, list[str]]:
-    """Score 0-100 on how well a company fits Spectrum's thesis."""
+    """
+    Score 0-100 against Spectrum's thesis:
+      Stage         40 pts
+      Business model 30 pts
+      Funding range  30 pts
+    """
     score = 0
     reasons: list[str] = []
     penalties: list[str] = []
 
     round_type = (c.get("last_round_type") or "").strip()
-    sector = (c.get("sector") or "").lower()
     bm = (c.get("business_model") or "").lower()
+    sector = (c.get("sector") or "").lower()
     desc = (c.get("description") or "").lower()
     total = _to_float(c.get("total_funding_usd"))
 
     # ── Stage (40 pts) ────────────────────────────────────────────────────────
     rt_lower = round_type.lower()
-    if any(s.lower() in rt_lower for s in SPECTRUM_THESIS["target_stages"]):
+    if any(s.lower() == rt_lower for s in SPECTRUM_THESIS["target_stages"]):
         score += 40
         reasons.append(f"Stage match ({round_type})")
-    elif any(s.lower() in rt_lower for s in SPECTRUM_THESIS["early_stages"]):
-        score -= 10
-        penalties.append(f"Too early ({round_type})")
+    elif any(s.lower() == rt_lower for s in SPECTRUM_THESIS["excluded_stages"]):
+        penalties.append(f"Stage out of scope ({round_type})")
+    elif round_type:
+        penalties.append(f"Unknown stage ({round_type})")
 
     # ── Business model (30 pts) ───────────────────────────────────────────────
     text = f"{bm} {desc} {sector}"
     bm_hits = [kw for kw in SPECTRUM_THESIS["business_model_keywords"] if kw in text]
     if bm_hits:
         score += 30
-        reasons.append(f"Software/internet model ({bm or bm_hits[0]})")
+        reasons.append(f"Software/data model ({bm or bm_hits[0]})")
+    else:
+        penalties.append("No software/data model detected")
 
-    # ── Sector fit (15 pts) ───────────────────────────────────────────────────
-    excl = [s.lower() for s in SPECTRUM_THESIS["excluded_sectors"]]
-    incl = [s.lower() for s in SPECTRUM_THESIS["target_sectors"]]
-    if any(kw in sector for kw in excl):
-        score -= 30
-        penalties.append(f"Excluded sector ({c.get('sector')})")
-    elif any(kw in sector for kw in incl):
-        score += 15
-        reasons.append(f"Target sector ({c.get('sector')})")
-
-    # ── Funding range (15 pts) ────────────────────────────────────────────────
-    fmin = SPECTRUM_THESIS["total_funding_min_usd"]
+    # ── Funding range (30 pts) — $0-$20M total raised ─────────────────────────
     fmax = SPECTRUM_THESIS["total_funding_max_usd"]
     if total is not None:
-        if fmin <= total <= fmax:
-            score += 15
-            reasons.append(f"Funding in range (${total/1e6:.0f}M total raised)")
-        elif total > fmax:
-            penalties.append(f"Likely over-capitalised (${total/1e6:.0f}M total raised)")
+        if total <= fmax:
+            score += 30
+            label = f"${total/1e6:.1f}M" if total > 0 else "undisclosed / $0"
+            reasons.append(f"Funding in range ({label} total raised)")
         else:
-            penalties.append(f"Possibly pre-scale (${total/1e6:.0f}M total raised)")
+            penalties.append(f"Over-capitalised (${total/1e6:.0f}M total raised)")
+    else:
+        reasons.append("Funding undisclosed — assumed in range (+30)")
+        score += 30
 
     return max(score, 0), reasons + (["⚠ " + p for p in penalties] if penalties else [])
 
