@@ -278,8 +278,28 @@ def health():
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+def _start_ngrok_tunnel(port: int) -> None:
+    """Open a public tunnel via pyngrok and print the Request URL."""
+    try:
+        from pyngrok import ngrok, conf
+        token = os.getenv("NGROK_AUTHTOKEN", "")
+        if token:
+            conf.get_default().auth_token = token
+        tunnel = ngrok.connect(port, "http")
+        public_url = tunnel.public_url.replace("http://", "https://")
+        print("\n" + "=" * 60)
+        print(f"  Public URL (paste into Slack slash command):")
+        print(f"  {public_url}/sourcing")
+        print("=" * 60 + "\n")
+    except ImportError:
+        logger.info("pyngrok not installed — skipping tunnel (run: pip install pyngrok)")
+    except Exception as e:
+        logger.warning("ngrok tunnel failed: %s", e)
+
+
 if __name__ == "__main__":
     if not SLACK_SIGNING_SECRET:
         logger.warning("SLACK_SIGNING_SECRET not set — run in dev mode only")
+    _start_ngrok_tunnel(PORT)
     logger.info("Starting Slack bot on port %d", PORT)
     app.run(host="0.0.0.0", port=PORT, debug=False)
