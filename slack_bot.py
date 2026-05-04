@@ -51,6 +51,7 @@ logger = logging.getLogger("slack_bot")
 app = Flask(__name__)
 
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET", "")
+NGROK_DOMAIN = os.getenv("NGROK_DOMAIN", "")
 PORT = int(os.getenv("PORT", 3000))
 
 
@@ -285,10 +286,13 @@ def _start_ngrok_tunnel(port: int) -> None:
         token = os.getenv("NGROK_AUTHTOKEN", "")
         if token:
             conf.get_default().auth_token = token
-        tunnel = ngrok.connect(port, "http")
+        options = {"bind_tls": True}
+        if NGROK_DOMAIN:
+            options["hostname"] = NGROK_DOMAIN
+        tunnel = ngrok.connect(port, "http", **options)
         public_url = tunnel.public_url.replace("http://", "https://")
         print("\n" + "=" * 60)
-        print(f"  Public URL (paste into Slack slash command):")
+        print(f"  Paste this into Slack → Slash Commands → Request URL:")
         print(f"  {public_url}/sourcing")
         print("=" * 60 + "\n")
     except ImportError:
