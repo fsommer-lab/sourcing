@@ -30,9 +30,11 @@ SPECTRUM_THESIS = {
         "Pre-Seed", "Angel", "Series B", "Series C", "Series D", "Series E",
         "Growth Equity", "Late Stage", "PE Buyout", "IPO",
     ],
-    # Total capital raised range (USD) — 40 pts for stage, 30 for biz model, 30 for funding
+    # Scoring: stage 40 pts | biz model 30 pts | funding 20 pts | headcount 10 pts = 100
     "total_funding_min_usd": 0,
     "total_funding_max_usd": 20_000_000,
+    "headcount_min": 20,
+    "headcount_max": 100,
     # Business models Spectrum targets (30 pts)
     "business_model_keywords": [
         "saas", "software", "subscription", "platform", "marketplace",
@@ -65,6 +67,7 @@ Return ONLY a JSON array with no markdown or extra text:
   "last_round_type": "exact round type string from PitchBook or null",
   "last_round_amount_usd": number or null,
   "last_round_date": "YYYY-MM-DD or null",
+  "headcount": current employee count as a number or null,
   "website": "URL or null",
   "pitchbook_url": "PitchBook URL or null"
 }}]
@@ -79,9 +82,10 @@ If the investor has no recorded investments, return: []
 def score_company(c: dict) -> tuple[int, list[str]]:
     """
     Score 0-100 against Spectrum's thesis:
-      Stage         40 pts
+      Stage          40 pts
       Business model 30 pts
-      Funding range  30 pts
+      Funding range  20 pts  ($0–$20M total raised)
+      Headcount      10 pts  (20–100 employees)
     """
     score = 0
     reasons: list[str] = []
@@ -92,6 +96,7 @@ def score_company(c: dict) -> tuple[int, list[str]]:
     sector = (c.get("sector") or "").lower()
     desc = (c.get("description") or "").lower()
     total = _to_float(c.get("total_funding_usd"))
+    headcount = _to_int(c.get("headcount"))
 
     # ── Stage (40 pts) ────────────────────────────────────────────────────────
     rt_lower = round_type.lower()
@@ -112,18 +117,33 @@ def score_company(c: dict) -> tuple[int, list[str]]:
     else:
         penalties.append("No software/data model detected")
 
-    # ── Funding range (30 pts) — $0-$20M total raised ─────────────────────────
+    # ── Funding range (20 pts) — $0–$20M total raised ────────────────────────
     fmax = SPECTRUM_THESIS["total_funding_max_usd"]
     if total is not None:
         if total <= fmax:
-            score += 30
-            label = f"${total/1e6:.1f}M" if total > 0 else "undisclosed / $0"
+            score += 20
+            label = f"${total/1e6:.1f}M" if total > 0 else "$0"
             reasons.append(f"Funding in range ({label} total raised)")
         else:
             penalties.append(f"Over-capitalised (${total/1e6:.0f}M total raised)")
     else:
-        reasons.append("Funding undisclosed — assumed in range (+30)")
-        score += 30
+        score += 20
+        reasons.append("Funding undisclosed — assumed in range (+20)")
+
+    # ── Headcount (10 pts) — 20–100 employees ────────────────────────────────
+    hmin = SPECTRUM_THESIS["headcount_min"]
+    hmax = SPECTRUM_THESIS["headcount_max"]
+    if headcount is not None:
+        if hmin <= headcount <= hmax:
+            score += 10
+            reasons.append(f"Headcount in range ({headcount} employees)")
+        elif headcount < hmin:
+            penalties.append(f"Too small ({headcount} employees)")
+        else:
+            penalties.append(f"Too large ({headcount} employees)")
+    else:
+        score += 10
+        reasons.append("Headcount undisclosed — assumed in range (+10)")
 
     return max(score, 0), reasons + (["⚠ " + p for p in penalties] if penalties else [])
 
@@ -209,12 +229,21 @@ def _fmt_round(c: dict) -> str:
         parts.append(f"Total raised: ${_to_float(c['total_funding_usd'])/1e6:.0f}M")
     if c.get("last_round_date"):
         parts.append(f"Date: {c['last_round_date']}")
+    if c.get("headcount"):
+        parts.append(f"Headcount: {c['headcount']}")
     return "  " + "  |  ".join(parts) if parts else "  No deal data"
 
 
 def _to_float(value) -> float | None:
     try:
         return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_int(value) -> int | None:
+    try:
+        return int(float(value)) if value is not None else None
     except (TypeError, ValueError):
         return None
 
