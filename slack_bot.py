@@ -25,6 +25,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).parent / ".env")
+
 from tools.claude_cli import call_claude, parse_json
 from vc_portfolio_sourcing import (
     _PORTFOLIO_PROMPT,
